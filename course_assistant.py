@@ -19,9 +19,13 @@ class CourseAssistant:
     def __init__(
         self,
         course_root: Path,
+        force_rebuild_index: bool = False,
     ) -> None:
         self.lesson_repository = LessonRepository(course_root)
-        self.semantic_lesson_search = SemanticLessonSearch(self.lesson_repository.load_lessons())
+        self.semantic_lesson_search = SemanticLessonSearch(
+            lessons=self.lesson_repository.load_lessons(),
+            force_rebuild_index=force_rebuild_index,
+        )
 
         self.answer_generator = OpenAIAnswerGenerator()
 
@@ -36,7 +40,6 @@ class CourseAssistant:
             answer=answer,
             sources=search_results,
         )
-
 
 
 
