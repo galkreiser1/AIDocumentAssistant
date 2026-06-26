@@ -1,3 +1,6 @@
+import json
+import shutil
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from llama_index.core import Document, StorageContext, VectorStoreIndex, load_index_from_storage
@@ -15,7 +18,15 @@ from lesson_repository import Lesson
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 STORAGE_PATH = PROJECT_ROOT / "storage" / "semantic_index"
+METADATA_FILE_NAME = "index_metadata.json"
 EMBEDDING_MODEL = "text-embedding-3-small"
+
+
+@dataclass(frozen=True)
+class IndexSettings:
+    embedding_model: str
+    chunk_size: int
+    chunk_overlap: int
 
 
 class SemanticLessonSearch:
@@ -25,25 +36,48 @@ class SemanticLessonSearch:
         storage_dir: Path = STORAGE_PATH,
         chunk_size: int = 512,
         chunk_overlap: int = 50,
+        force_rebuild_index: bool = False,
     ) -> None:
 
         self.storage_dir = storage_dir
+        self.index_settings = IndexSettings(
+            embedding_model=EMBEDDING_MODEL,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+        )
         self.embedding_model = OpenAIEmbedding(model=EMBEDDING_MODEL)
 
-        if self._index_exists():
-            self.index = self._load_index()
-        else:
-            documents = self._create_documents(lessons)
-            nodes = self._create_nodes(
-                documents=documents,
+        if force_rebuild_index or not self._can_load_existing_index():
+            self.index = self._build_and_persist_index(
+                lessons=lessons,
                 chunk_size=chunk_size,
                 chunk_overlap=chunk_overlap,
             )
-            self.index = self._create_index(nodes)
-            self.index.storage_context.persist(persist_dir=str(storage_dir))
+        else:
+            self.index = self._load_index()
 
         self.nodes = list(self.index.docstore.docs.values())
         self.retriever = self._create_hybrid_retriever()
+
+    def _build_and_persist_index(
+        self,
+        lessons: list[Lesson],
+        chunk_size: int,
+        chunk_overlap: int,
+    ) -> VectorStoreIndex:
+        self._clear_storage_dir()
+
+        documents = self._create_documents(lessons)
+        nodes = self._create_nodes(
+            documents=documents,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+        )
+        index = self._create_index(nodes)
+        index.storage_context.persist(persist_dir=str(self.storage_dir))
+        self._write_index_metadata()
+
+        return index
 
     @staticmethod
     def _create_documents(lessons: list[Lesson]) -> list[Document]:
@@ -88,6 +122,32 @@ class SemanticLessonSearch:
 
     def _index_exists(self) -> bool:
         return (self.storage_dir / "docstore.json").exists()
+
+    def _can_load_existing_index(self) -> bool:
+        return self._index_exists() and self._stored_settings_match_current_settings()
+
+    @property
+    def _metadata_path(self) -> Path:
+        return self.storage_dir / METADATA_FILE_NAME
+
+    def _stored_settings_match_current_settings(self) -> bool:
+        if not self._metadata_path.exists():
+            return False
+
+        with self._metadata_path.open("r", encoding="utf-8") as metadata_file:
+            stored_metadata = json.load(metadata_file)
+
+        return stored_metadata == asdict(self.index_settings)
+
+    def _write_index_metadata(self) -> None:
+        self.storage_dir.mkdir(parents=True, exist_ok=True)
+
+        with self._metadata_path.open("w", encoding="utf-8") as metadata_file:
+            json.dump(asdict(self.index_settings), metadata_file, indent=2)
+
+    def _clear_storage_dir(self) -> None:
+        if self.storage_dir.exists():
+            shutil.rmtree(self.storage_dir)
 
     @staticmethod
     def _to_search_results(nodes: list[NodeWithScore]) -> list[SemanticSearchResult]:
